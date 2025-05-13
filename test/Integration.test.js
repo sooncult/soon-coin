@@ -81,12 +81,17 @@ describe("SOON Ecosystem Integration", function () {
     );
     await positionManager.deployed();
     
-    // Deploy LiquidityManager
+    // Create pool in factory
+    await factory.createPool(soon.address, weth.address, 3000);
+    const poolAddress = await factory.getPool(soon.address, weth.address, 3000);
+    
+    // Deploy LiquidityManager in mock mode for testing
     const LiquidityManager = await ethers.getContractFactory("LiquidityManager");
     liquidityManager = await LiquidityManager.deploy(
       soon.address,
       weth.address,
       positionManager.address
+      // No pool address = mock mode
     );
     await liquidityManager.deployed();
     
@@ -97,9 +102,6 @@ describe("SOON Ecosystem Integration", function () {
     // Get some WETH for liquidity
     await weth.deposit({ value: ethers.utils.parseEther("100") });
     await weth.transfer(liquidityManager.address, ethers.utils.parseEther("100"));
-    
-    // Create pool in factory
-    await factory.createPool(soon.address, weth.address, 3000);
     
     // Configure SOON token's LiquidityManager
     await soon.setLiquidityManager(liquidityManager.address);

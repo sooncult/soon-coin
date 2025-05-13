@@ -32,18 +32,32 @@ describe("LiquidityManager", function () {
     );
     await positionManager.deployed();
     
-    // Deploy LiquidityManager
-    const LiquidityManager = await ethers.getContractFactory("LiquidityManager");
-    liquidityManager = await LiquidityManager.deploy(
-      soon.address,
-      weth.address,
-      positionManager.address
-    );
-    await liquidityManager.deployed();
-    
     // Create SOON/WETH pool in the factory
     await factory.createPool(soon.address, weth.address, 3000);
     const poolAddress = await factory.getPool(soon.address, weth.address, 3000);
+    
+    // Run tests with both mock mode and with real pool to ensure both work
+    if (process.env.TEST_WITH_REAL_POOL === 'true') {
+      // Test with real pool address
+      const LiquidityManager = await ethers.getContractFactory("LiquidityManager");
+      liquidityManager = await LiquidityManager.deploy(
+        soon.address,
+        weth.address,
+        positionManager.address,
+        poolAddress // Use real pool address
+      );
+      await liquidityManager.deployed();
+    } else {
+      // Test with mock mode (default)
+      const LiquidityManager = await ethers.getContractFactory("LiquidityManager");
+      liquidityManager = await LiquidityManager.deploy(
+        soon.address,
+        weth.address,
+        positionManager.address
+        // No 4th parameter = mock mode
+      );
+      await liquidityManager.deployed();
+    }
     
     // Transfer SOON tokens to LiquidityManager
     await soon.transfer(liquidityManager.address, ethers.utils.parseEther("347100000")); // 5% of supply
@@ -58,7 +72,17 @@ describe("LiquidityManager", function () {
       expect(await liquidityManager.soonToken()).to.equal(soon.address);
       expect(await liquidityManager.rbtcToken()).to.equal(weth.address);
       expect(await liquidityManager.positionManager()).to.equal(positionManager.address);
-      expect(await liquidityManager.sushiPoolOracle()).to.equal(liquidityManager.address); // Mock self-referential for testing
+      
+      // Check oracle mode based on environment variable
+      if (process.env.TEST_WITH_REAL_POOL === 'true') {
+        // Real pool test
+        expect(await liquidityManager.isMockMode()).to.equal(false);
+        expect(await liquidityManager.sushiPoolOracle()).to.not.equal(liquidityManager.address);
+      } else {
+        // Mock mode test (default)
+        expect(await liquidityManager.isMockMode()).to.equal(true);
+        expect(await liquidityManager.sushiPoolOracle()).to.equal(liquidityManager.address);
+      }
     });
     
     it("Should set the default parameters", async function () {
@@ -341,6 +365,45 @@ describe("LiquidityManager", function () {
       await expect(
         liquidityManager.rescueRBTC(owner.address)
       ).to.be.revertedWith("LM: Contract is locked");
+    });
+  });
+  
+  // Add tests specifically for mock oracle functions
+  describe("Oracle Functions", function() {
+    it("Should allow calling mock oracle functions in mock mode", async function () {
+      // Skip test if using real pool
+      if (process.env.TEST_WITH_REAL_POOL === 'true') {
+        this.skip();
+        return;
+      }
+      
+      const secondsAgos = [1800, 0];
+      const [tickCumulatives, secondsPerLiquidityCumulativeX128s] = 
+        await liquidityManager.observe(secondsAgos);
+      
+      expect(tickCumulatives.length).to.equal(2);
+      expect(secondsPerLiquidityCumulativeX128s.length).to.equal(2);
+      
+      const slot0Data = await liquidityManager.slot0();
+      expect(slot0Data.tick).to.equal(0);
+      expect(slot0Data.unlocked).to.equal(true);
+    });
+    
+    it("Should revert when calling mock functions with real pool", async function () {
+      // Skip test if using mock mode
+      if (process.env.TEST_WITH_REAL_POOL !== 'true') {
+        this.skip();
+        return;
+      }
+      
+      const secondsAgos = [1800, 0];
+      await expect(
+        liquidityManager.observe(secondsAgos)
+      ).to.be.revertedWith("LM: Not in mock mode");
+      
+      await expect(
+        liquidityManager.slot0()
+      ).to.be.revertedWith("LM: Not in mock mode");
     });
   });
 }); 
