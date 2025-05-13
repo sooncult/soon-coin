@@ -1,5 +1,6 @@
 // Scripts for deploying the SOON token ecosystem
 const hre = require("hardhat");
+const { ethers } = require("hardhat");
 
 async function main() {
   console.log("Deploying SOON Token contracts to Rootstock Testnet...");
@@ -71,8 +72,8 @@ async function main() {
       liquidityManager = await LiquidityManager.deploy(
           soon.address,
           weth9.address,
-          positionManager.address
-          // No pool address = mock mode
+          positionManager.address,
+          ethers.constants.AddressZero // Use address(0) for mock mode
       );
   } else {
       // Testnet/Mainnet mode: Use real pool as oracle

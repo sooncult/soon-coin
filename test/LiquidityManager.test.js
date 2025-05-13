@@ -53,8 +53,8 @@ describe("LiquidityManager", function () {
       liquidityManager = await LiquidityManager.deploy(
         soon.address,
         weth.address,
-        positionManager.address
-        // No 4th parameter = mock mode
+        positionManager.address,
+        ethers.constants.AddressZero // Use address(0) for mock mode
       );
       await liquidityManager.deployed();
     }

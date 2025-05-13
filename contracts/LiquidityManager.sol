@@ -115,6 +115,12 @@ interface IUniswapV3PoolOracle {
  * @dev Manages a SushiSwap V3 liquidity position for SOON/RBTC.
  * Collects fees and rebalances the position around a TWAP.
  * Designed to be permissionless after initial setup and ownership renouncement.
+ * 
+ * The constructor takes:
+ * - SOON token address
+ * - RBTC token address (WRBTC)
+ * - SushiSwap V3 NonfungiblePositionManager address
+ * - SushiSwap V3 Pool address for TWAP oracle (optional, empty = mock mode)
  */
 contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
     INonfungiblePositionManager public immutable positionManager;
@@ -140,9 +146,9 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
 
     constructor(
         address _soonTokenAddress,
-        address _rbtcTokenAddress,       // WRBTC address
-        address _positionManagerAddress, // SushiSwap V3 NonfungiblePositionManager
-        address _poolOracleAddress       // Optional: real pool address for production
+        address _rbtcTokenAddress,
+        address _positionManagerAddress,
+        address _poolOracleAddress
     ) {
         require(_positionManagerAddress != address(0) &&
                 _soonTokenAddress != address(0) && _rbtcTokenAddress != address(0), "LM: Zero address provided");

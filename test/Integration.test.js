@@ -90,8 +90,8 @@ describe("SOON Ecosystem Integration", function () {
     liquidityManager = await LiquidityManager.deploy(
       soon.address,
       weth.address,
-      positionManager.address
-      // No pool address = mock mode
+      positionManager.address,
+      ethers.constants.AddressZero // Use address(0) for mock mode
     );
     await liquidityManager.deployed();
     
