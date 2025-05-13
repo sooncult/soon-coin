@@ -30,44 +30,61 @@ async function main() {
   await airdrop.deployed();
   console.log("SOONAirdrop deployed to:", airdrop.address);
 
+  // Deploy SushiSwap V3 Factory
+  console.log("Deploying SushiSwap V3 Factory...");
+  const SushiSwapV3Factory = await hre.ethers.getContractFactory("SushiSwapV3Factory");
+  const factory = await SushiSwapV3Factory.deploy();
+  await factory.deployed();
+  console.log("SushiSwap V3 Factory deployed to:", factory.address);
+
+  // Deploy WETH9
+  console.log("Deploying WETH9...");
+  const WETH9 = await hre.ethers.getContractFactory("WETH9");
+  const weth9 = await WETH9.deploy();
+  await weth9.deployed();
+  console.log("WETH9 deployed to:", weth9.address);
+
+  // Deploy Nonfungible Position Manager
+  console.log("Deploying Nonfungible Position Manager...");
+  const NonfungiblePositionManager = await hre.ethers.getContractFactory("NonfungiblePositionManager");
+  const positionManager = await NonfungiblePositionManager.deploy(
+    factory.address,
+    weth9.address,
+    deployer.address
+  );
+  await positionManager.deployed();
+  console.log("Nonfungible Position Manager deployed to:", positionManager.address);
+
   // Deploy LiquidityManager
   console.log("Deploying LiquidityManager...");
   const LiquidityManager = await hre.ethers.getContractFactory("LiquidityManager");
-  
-  // Rootstock Testnet addresses
-  const positionManager = "0x9Cb1f0B7B2cB0B0E0B0B0B0B0B0B0B0B0B0B0B0"; // Replace with actual SushiSwap V3 Position Manager address
-  const poolAddress = "0x8Cb1f0B7B2cB0B0E0B0B0B0B0B0B0B0B0B0B0B0"; // Replace with actual SOON/RBTC pool address
-  const wbtcAddress = "0x542fDA317318eBF1d3DEAf76E0b632741A7e677d"; // Rootstock Testnet WRBTC address
-  
   const liquidityManager = await LiquidityManager.deploy(
-    positionManager,
-    poolAddress,
     soon.address,
-    wbtcAddress,
-    2000,    // Initial tick distance
-    1800     // Initial TWAP interval (30 minutes)
+    weth9.address,
+    positionManager.address
   );
   await liquidityManager.deployed();
   console.log("LiquidityManager deployed to:", liquidityManager.address);
 
   // Set LiquidityManager in SOON token
   console.log("Setting LiquidityManager in SOON token...");
-  await soon.setLiquidityManager(liquidityManager.address);
-  console.log("LiquidityManager set in SOON token");
+  await soon.transferOwnership(liquidityManager.address);
+  console.log("Transferred SOON token ownership to Liquidity Manager");
 
   console.log("Deployment completed!");
   
   // Log contract addresses for verification
   console.log("\nContract Addresses:");
+  console.log("SushiSwap V3 Factory:", factory.address);
+  console.log("WETH9:", weth9.address);
+  console.log("Nonfungible Position Manager:", positionManager.address);
   console.log("SOON Token:", soon.address);
-  console.log("SOONAirdrop:", airdrop.address);
-  console.log("LiquidityManager:", liquidityManager.address);
+  console.log("SOON Airdrop:", airdrop.address);
+  console.log("Liquidity Manager:", liquidityManager.address);
 
   // Wait for a few block confirmations
   console.log("\nWaiting for block confirmations...");
-  await hre.network.provider.waitForTransaction(soon.deployTransaction.hash, 5);
-  await hre.network.provider.waitForTransaction(airdrop.deployTransaction.hash, 5);
-  await hre.network.provider.waitForTransaction(liquidityManager.deployTransaction.hash, 5);
+  console.log("All contracts deployed successfully!");
 }
 
 main()

@@ -1,8 +1,56 @@
-node_modules
-artifacts
-cache
+# Dependency directories
+node_modules/
+package-lock.json
+yarn.lock
+
+# Hardhat artifacts and cache
+artifacts/
+cache/
+typechain/
+typechain-types/
+
+# Environment variables
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+.secrets.json
+
+# Compiler files
+out/
+forge-cache/
+dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage directory
+coverage/
+coverage.json
+
+# IDE / editor specific
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Hardhat deployment files
+deployments/hardhat/
+deployments/localhost/
+
+# Gas reports
+gas-report.txt
+
+# Tenderly
+.tenderly
+
+# Forge
+lib/
+flattened/
+broadcast/
