@@ -118,7 +118,7 @@ interface IUniswapV3PoolOracle {
  */
 contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
     INonfungiblePositionManager public immutable positionManager;
-    IUniswapV3PoolOracle public immutable sushiPoolOracle; // The SOON/RBTC SushiSwap V3 Pool
+    IUniswapV3PoolOracle public sushiPoolOracle; // Removed immutable - will be set in constructor
     
     IERC20 public immutable soonToken;
     address public immutable rbtcToken; // WNATIVE address on Rootstock (WRBTC)
