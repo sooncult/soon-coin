@@ -55,16 +55,38 @@ async function main() {
   await positionManager.deployed();
   console.log("Nonfungible Position Manager deployed to:", positionManager.address);
 
-  // Deploy LiquidityManager
+  // Create initial liquidity pool
+  const tx = await factory.createPool(soon.address, weth9.address, 3000);
+  const receipt = await tx.wait();
+  const poolAddress = await factory.getPool(soon.address, weth9.address, 3000);
+  console.log("Created SOON/WETH pool at:", poolAddress);
+
+  // Deploy LiquidityManager with network awareness
   console.log("Deploying LiquidityManager...");
   const LiquidityManager = await hre.ethers.getContractFactory("LiquidityManager");
-  const liquidityManager = await LiquidityManager.deploy(
-    soon.address,
-    weth9.address,
-    positionManager.address
-  );
+  
+  let liquidityManager;
+  if (network.name === 'hardhat' || network.name === 'localhost') {
+      // Local testing mode: Use mock oracle (no pool address)
+      liquidityManager = await LiquidityManager.deploy(
+          soon.address,
+          weth9.address,
+          positionManager.address
+          // No pool address = mock mode
+      );
+  } else {
+      // Testnet/Mainnet mode: Use real pool as oracle
+      liquidityManager = await LiquidityManager.deploy(
+          soon.address,
+          weth9.address,
+          positionManager.address,
+          poolAddress // Real pool address for TWAP oracle
+      );
+  }
+
   await liquidityManager.deployed();
   console.log("LiquidityManager deployed to:", liquidityManager.address);
+  console.log("Oracle mode:", await liquidityManager.isMockMode() ? "Mock Oracle" : "Real Oracle");
 
   // Set LiquidityManager in SOON token
   console.log("Setting LiquidityManager in SOON token...");

@@ -116,7 +116,7 @@ interface IUniswapV3PoolOracle {
  * Collects fees and rebalances the position around a TWAP.
  * Designed to be permissionless after initial setup and ownership renouncement.
  */
-contract LiquidityManager is Ownable, ReentrancyGuard {
+contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
     INonfungiblePositionManager public immutable positionManager;
     IUniswapV3PoolOracle public immutable sushiPoolOracle; // The SOON/RBTC SushiSwap V3 Pool
     
@@ -129,6 +129,7 @@ contract LiquidityManager is Ownable, ReentrancyGuard {
     uint32 public twapIntervalSeconds; // e.g., 1800 for 30-minute TWAP
 
     bool public isLocked; // If true, ownership functions are disabled
+    bool public isMockMode; // If true, we're using mock oracle functions
 
     event PositionInitialized(uint256 indexed tokenId, int24 initialTickLower, int24 initialTickUpper);
     event PositionRebalanced(uint256 indexed tokenId, int24 newTickLower, int24 newTickUpper, uint128 newLiquidity);
@@ -140,7 +141,8 @@ contract LiquidityManager is Ownable, ReentrancyGuard {
     constructor(
         address _soonTokenAddress,
         address _rbtcTokenAddress,       // WRBTC address
-        address _positionManagerAddress  // SushiSwap V3 NonfungiblePositionManager
+        address _positionManagerAddress, // SushiSwap V3 NonfungiblePositionManager
+        address _poolOracleAddress       // Optional: real pool address for production
     ) {
         require(_positionManagerAddress != address(0) &&
                 _soonTokenAddress != address(0) && _rbtcTokenAddress != address(0), "LM: Zero address provided");
@@ -149,9 +151,16 @@ contract LiquidityManager is Ownable, ReentrancyGuard {
         rbtcToken = _rbtcTokenAddress; // This should be WRBTC
         positionManager = INonfungiblePositionManager(_positionManagerAddress);
         
-        // Use the position manager to find factory and create a dummy pool if needed
-        // In a mock implementation, we'll just use address(this) as a dummy oracle
-        sushiPoolOracle = IUniswapV3PoolOracle(address(this));
+        // Set up oracle mode based on parameters
+        if (_poolOracleAddress != address(0)) {
+            // Production mode: Use the provided pool address as oracle
+            sushiPoolOracle = IUniswapV3PoolOracle(_poolOracleAddress);
+            isMockMode = false;
+        } else {
+            // Testing mode: Use self-referential mock oracle
+            sushiPoolOracle = IUniswapV3PoolOracle(address(this));
+            isMockMode = true;
+        }
         
         // Default values for tick distance and TWAP interval
         tickDistance = 2000;           // Default tick distance
@@ -418,12 +427,15 @@ contract LiquidityManager is Ownable, ReentrancyGuard {
 
     /**
      * @notice Mock implementation of observe for the IUniswapV3PoolOracle interface
-     * @dev This is only used in local testing and should be overridden in production
+     * @dev This is only used in local testing and will revert in production mode
      */
     function observe(uint32[] calldata secondsAgos) 
         external 
         view 
-        returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityCumulativeX128s) {
+        returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityCumulativeX128s) 
+    {
+        require(isMockMode, "LM: Not in mock mode");
+        
         // Mock implementation that returns some dummy data
         tickCumulatives = new int56[](secondsAgos.length);
         secondsPerLiquidityCumulativeX128s = new uint160[](secondsAgos.length);
@@ -439,7 +451,7 @@ contract LiquidityManager is Ownable, ReentrancyGuard {
     
     /**
      * @notice Mock implementation of slot0 for the IUniswapV3PoolOracle interface
-     * @dev This is only used in local testing and should be overridden in production
+     * @dev This is only used in local testing and will revert in production mode
      */
     function slot0() external view returns (
         uint160 sqrtPriceX96,
@@ -450,6 +462,8 @@ contract LiquidityManager is Ownable, ReentrancyGuard {
         uint8 feeProtocol,
         bool unlocked
     ) {
+        require(isMockMode, "LM: Not in mock mode");
+        
         // Mock implementation that returns some dummy data
         return (
             uint160(1 << 96), // 1.0 as a Q96 number
