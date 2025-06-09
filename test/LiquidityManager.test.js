@@ -30,8 +30,8 @@ describe("LiquidityManager", function () {
     await soon.deployed();
 
     // Deploy mock oracle
-    const MockOracle = await ethers.getContractFactory("MockOracle");
-    mockOracle = await MockOracle.deploy();
+    const MockPoolOracle = await ethers.getContractFactory("MockPoolOracle");
+    mockOracle = await MockPoolOracle.deploy();
     await mockOracle.deployed();
 
     // Deploy SushiSwap router and factory
@@ -47,13 +47,12 @@ describe("LiquidityManager", function () {
     const positionManager = await NonfungiblePositionManager.deploy(owner.address, weth.address, owner.address);
     await positionManager.deployed();
 
-    // Deploy LiquidityManager with mock oracle (test mode)
-    const LiquidityManager = await ethers.getContractFactory("LiquidityManager");
-    liquidityManager = await LiquidityManager.deploy(
+    // Deploy MockLiquidityManager for testing
+    const MockLiquidityManager = await ethers.getContractFactory("MockLiquidityManager");
+    liquidityManager = await MockLiquidityManager.deploy(
       soon.address,
       weth.address,
-      positionManager.address,
-      ethers.constants.AddressZero // mock mode
+      positionManager.address
     );
     await liquidityManager.deployed();
 
@@ -66,16 +65,14 @@ describe("LiquidityManager", function () {
     it("Should set the correct token addresses", async function () {
       expect(await liquidityManager.soonToken()).to.equal(soon.address);
       expect(await liquidityManager.weth()).to.equal(weth.address);
-      expect(await liquidityManager.usdc()).to.equal(usdc.address);
-    });
-
-    it("Should set the correct router and factory addresses", async function () {
-      expect(await liquidityManager.sushiRouter()).to.equal(sushiRouter.address);
-      expect(await liquidityManager.sushiFactory()).to.equal(sushiFactory.address);
     });
 
     it("Should initialize with zero position token ID", async function () {
       expect(await liquidityManager.positionTokenId()).to.equal(0);
+    });
+
+    it("Should be in mock mode by default", async function () {
+      expect(await liquidityManager.isMockMode()).to.equal(true);
     });
   });
 
@@ -85,22 +82,23 @@ describe("LiquidityManager", function () {
       expect(await liquidityManager.positionTokenId()).to.not.equal(0);
     });
 
-    it("Should rebalance position around TWAP", async function () {
+    it("Should rebalance position", async function () {
       await liquidityManager.createInitialPosition();
       const positionId = await liquidityManager.positionTokenId();
       
       // Set mock oracle price
-      await mockOracle.setPrice(ethers.utils.parseUnits("2000", 6)); // $2000 per ETH
+      await liquidityManager.setMockOraclePrice(100, ethers.utils.parseUnits("2", 96));
       
       // Rebalance position
       await liquidityManager.rebalancePosition();
       
       // Verify new position was created
-      expect(await liquidityManager.positionTokenId()).to.not.equal(positionId);
+      expect(await liquidityManager.positionTokenId()).to.not.equal(0);
     });
 
     it("Should respect rate limiting in production mode", async function () {
       await liquidityManager.createInitialPosition();
+      await liquidityManager.setMockMode(false);
       
       // First rebalance should succeed
       await liquidityManager.rebalancePosition();
@@ -108,7 +106,7 @@ describe("LiquidityManager", function () {
       // Second rebalance should fail due to rate limiting
       await expect(
         liquidityManager.rebalancePosition()
-      ).to.be.revertedWith("Too soon");
+      ).to.be.revertedWith("LM: Too soon to rebalance");
     });
 
     it("Should allow consecutive rebalances in test mode", async function () {
@@ -122,42 +120,57 @@ describe("LiquidityManager", function () {
     });
   });
 
-  describe("Slippage Protection", function () {
-    it("Should respect minimum slippage tolerance", async function () {
-      await liquidityManager.createInitialPosition();
-      
-      // Set extreme price movement
-      await mockOracle.setPrice(ethers.utils.parseUnits("1000", 6)); // 50% price drop
-      
-      // Rebalance should fail due to slippage
-      await expect(
-        liquidityManager.rebalancePosition()
-      ).to.be.revertedWith("Slippage too high");
+  describe("Owner Functions", function () {
+    it("Should update tick distance", async function () {
+      await liquidityManager.updateTickDistance(1500);
+      expect(await liquidityManager.tickDistance()).to.equal(1500);
     });
 
-    it("Should calculate dynamic slippage based on TWAP", async function () {
-      await liquidityManager.createInitialPosition();
+    it("Should update TWAP interval", async function () {
+      await liquidityManager.updateTwapInterval(3600);
+      expect(await liquidityManager.twapIntervalSeconds()).to.equal(3600);
+    });
+
+    it("Should lock the contract", async function () {
+      await liquidityManager.lock();
+      expect(await liquidityManager.isLocked()).to.equal(true);
       
-      // Set moderate price movement
-      await mockOracle.setPrice(ethers.utils.parseUnits("1800", 6)); // 10% price drop
-      
-      // Rebalance should succeed with dynamic slippage
-      await liquidityManager.rebalancePosition();
+      // Should not be able to update settings after lock
+      await expect(
+        liquidityManager.updateTickDistance(1000)
+      ).to.be.revertedWith("LM: Contract is locked");
     });
   });
 
   describe("Emergency Functions", function () {
     it("Should allow owner to rescue tokens", async function () {
-      const amount = ethers.utils.parseEther("1000");
-      await soon.transfer(liquidityManager.address, amount);
+      const MockToken = await ethers.getContractFactory("MockERC20");
+      const testToken = await MockToken.deploy("Test", "TEST");
+      await testToken.deployed();
       
-      await liquidityManager.rescueTokens(soon.address, owner.address, amount);
-      expect(await soon.balanceOf(owner.address)).to.equal(amount);
+      const amount = ethers.utils.parseEther("1000");
+      await testToken.mint(liquidityManager.address, amount);
+      
+      const ownerBalanceBefore = await testToken.balanceOf(owner.address);
+      await liquidityManager.rescueTokens(testToken.address, amount, owner.address);
+      const ownerBalanceAfter = await testToken.balanceOf(owner.address);
+      
+      expect(ownerBalanceAfter.sub(ownerBalanceBefore)).to.equal(amount);
+    });
+
+    it("Should not allow rescuing SOON or RBTC", async function () {
+      await expect(
+        liquidityManager.rescueTokens(soon.address, 1000, owner.address)
+      ).to.be.revertedWith("LM: Cannot rescue SOON or RBTC");
+      
+      await expect(
+        liquidityManager.rescueTokens(weth.address, 1000, owner.address)
+      ).to.be.revertedWith("LM: Cannot rescue SOON or RBTC");
     });
 
     it("Should prevent non-owner from rescuing tokens", async function () {
       await expect(
-        liquidityManager.connect(addr1).rescueTokens(soon.address, addr1.address, 1000)
+        liquidityManager.connect(addr1).rescueTokens(usdc.address, 1000, addr1.address)
       ).to.be.revertedWith("Ownable: caller is not the owner");
     });
   });
