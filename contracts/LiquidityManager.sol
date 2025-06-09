@@ -137,6 +137,9 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
     bool public isLocked; // If true, ownership functions are disabled
     bool public isMockMode; // If true, we're using mock oracle functions
 
+    uint256 public lastRebalanceTimestamp;
+    uint256 public constant MIN_REBALANCE_INTERVAL = 1 hours;
+
     event PositionInitialized(uint256 indexed tokenId, int24 initialTickLower, int24 initialTickUpper);
     event PositionRebalanced(uint256 indexed tokenId, int24 newTickLower, int24 newTickUpper, uint128 newLiquidity);
     event FeesCollected(uint256 amountSOON, uint256 amountRBTC);
@@ -202,6 +205,14 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         soonToken.approve(address(positionManager), amountSOONDesired);
         IERC20(rbtcToken).approve(address(positionManager), amountRBTCDdesired);
 
+        // --- Compute slippage protected mins respecting token ordering ---
+        uint256 amount0MinCalc = address(soonToken) < rbtcToken
+            ? (amountSOONDesired * 95 / 100)
+            : (amountRBTCDdesired * 95 / 100);
+        uint256 amount1MinCalc = address(soonToken) < rbtcToken
+            ? (amountRBTCDdesired * 95 / 100)
+            : (amountSOONDesired * 95 / 100);
+
         int24 tickLower = targetTick - tickDistance;
         int24 tickUpper = targetTick + tickDistance;
 
@@ -220,8 +231,8 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
             tickUpper: address(soonToken) < rbtcToken ? tickUpper : -tickLower,
             amount0Desired: address(soonToken) < rbtcToken ? amountSOONDesired : amountRBTCDdesired,
             amount1Desired: address(soonToken) < rbtcToken ? amountRBTCDdesired : amountSOONDesired,
-            amount0Min: 0, // WARNING: Setting to 0 accepts any price. Consider calculating a safe minimum.
-            amount1Min: 0, // WARNING: Setting to 0 accepts any price.
+            amount0Min: amount0MinCalc,
+            amount1Min: amount1MinCalc,
             recipient: address(this), // LP NFT minted to this contract
             deadline: block.timestamp + 600 // 10 minutes deadline
         });
@@ -245,6 +256,10 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
      * Anyone can call this. Keepers are incentivized by maintaining LP health.
      */
     function rebalancePosition() external nonReentrant {
+        // Only apply rate limiting in production mode (when not using mock oracle)
+        if (!isMockMode) {
+            require(block.timestamp >= lastRebalanceTimestamp + MIN_REBALANCE_INTERVAL, "Too soon");
+        }
         require(positionTokenId != 0, "LM: Position not initialized");
         // No isLocked check here, rebalancing should always be possible.
 
@@ -273,6 +288,8 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
             // Range has moved outside current position, rebalance
             _rebalanceToNewRange(currentLiquidity, newTickLower, newTickUpper);
         }
+
+        lastRebalanceTimestamp = block.timestamp;
     }
 
     /**
@@ -335,9 +352,9 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         INonfungiblePositionManager.DecreaseLiquidityParams memory decreaseParams = INonfungiblePositionManager.DecreaseLiquidityParams({
             tokenId: positionTokenId,
             liquidity: currentLiquidity,
-            amount0Min: 0, // WARNING: Setting to 0 accepts any price
-            amount1Min: 0, // WARNING: Setting to 0 accepts any price
-            deadline: block.timestamp + 600 // 10 minutes deadline
+            amount0Min: 0, // accept whatever comes out (optional: add slippage guard)
+            amount1Min: 0,
+            deadline: block.timestamp + 600
         });
 
         (uint256 amount0, uint256 amount1) = positionManager.decreaseLiquidity(decreaseParams);
@@ -354,19 +371,43 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         amount0 += collected0;
         amount1 += collected1;
 
-        // 3. Add liquidity to new range
-        INonfungiblePositionManager.IncreaseLiquidityParams memory increaseParams = INonfungiblePositionManager.IncreaseLiquidityParams({
-            tokenId: positionTokenId,
-            amount0Desired: amount0,
-            amount1Desired: amount1,
-            amount0Min: 0, // WARNING: Setting to 0 accepts any price
-            amount1Min: 0, // WARNING: Setting to 0 accepts any price
-            deadline: block.timestamp + 600 // 10 minutes deadline
+        // ------------------------------------------------------------------
+        // Mint a NEW position centred at the new tick range
+        // ------------------------------------------------------------------
+
+        // Approve tokens again for the new mint
+        if (address(soonToken) < rbtcToken) {
+            soonToken.approve(address(positionManager), amount0);
+            IERC20(rbtcToken).approve(address(positionManager), amount1);
+        } else {
+            soonToken.approve(address(positionManager), amount1);
+            IERC20(rbtcToken).approve(address(positionManager), amount0);
+        }
+
+        // Compute slippage-protected mins for mint
+        uint256 min0 = address(soonToken) < rbtcToken ? (amount0 * 95 / 100) : (amount1 * 95 / 100);
+        uint256 min1 = address(soonToken) < rbtcToken ? (amount1 * 95 / 100) : (amount0 * 95 / 100);
+
+        INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
+            token0: address(soonToken) < rbtcToken ? address(soonToken) : rbtcToken,
+            token1: address(soonToken) < rbtcToken ? rbtcToken : address(soonToken),
+            fee: POOL_FEE,
+            tickLower: address(soonToken) < rbtcToken ? newTickLower : -newTickUpper,
+            tickUpper: address(soonToken) < rbtcToken ? newTickUpper : -newTickLower,
+            amount0Desired: address(soonToken) < rbtcToken ? amount0 : amount1,
+            amount1Desired: address(soonToken) < rbtcToken ? amount1 : amount0,
+            amount0Min: min0,
+            amount1Min: min1,
+            recipient: address(this),
+            deadline: block.timestamp + 600
         });
 
-        (uint128 newLiquidity, , ) = positionManager.increaseLiquidity(increaseParams);
+        (uint256 newTokenId, uint128 newLiquidity, , ) = positionManager.mint(params);
 
-        emit PositionRebalanced(positionTokenId, newTickLower, newTickUpper, newLiquidity);
+        // Update stored tokenId to the fresh position
+        positionTokenId = newTokenId;
+
+        emit PositionRebalanced(newTokenId, newTickLower, newTickUpper, newLiquidity);
     }
 
     // --- Owner Functions ---

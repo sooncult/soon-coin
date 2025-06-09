@@ -65,7 +65,6 @@ async function main() {
   // Deploy LiquidityManager with network awareness
   console.log("Deploying LiquidityManager...");
   const LiquidityManager = await hre.ethers.getContractFactory("LiquidityManager");
-  
   let liquidityManager;
   if (network.name === 'hardhat' || network.name === 'localhost') {
       // Local testing mode: Use mock oracle (no pool address)
@@ -84,14 +83,13 @@ async function main() {
           poolAddress // Real pool address for TWAP oracle
       );
   }
-
   await liquidityManager.deployed();
   console.log("LiquidityManager deployed to:", liquidityManager.address);
   console.log("Oracle mode:", await liquidityManager.isMockMode() ? "Mock Oracle" : "Real Oracle");
 
   // Set LiquidityManager in SOON token
   console.log("Setting LiquidityManager in SOON token...");
-  await soon.transferOwnership(liquidityManager.address);
+  await soon.setLiquidityManager(liquidityManager.address);
   console.log("Transferred SOON token ownership to Liquidity Manager");
 
   console.log("Deployment completed!");
