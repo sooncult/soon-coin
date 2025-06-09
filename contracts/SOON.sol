@@ -149,14 +149,17 @@ contract SOON is ERC20, Ownable {
     function _standardTransfer(address sender, address recipient, uint256 amount) private {
         uint256 currentRate = _getRate();
         // Deduct from sender
-        _tOwned[sender] -= amount;
+        if (_tOwned[sender] < amount) revert("Insufficient balance");
+        _tOwned[sender] = _tOwned[sender] - amount;
         if (!_isExcludedFromReward[sender]) {
-            _rOwned[sender] -= amount * currentRate;
+            uint256 rAmount = amount * currentRate;
+            if (_rOwned[sender] < rAmount) revert("Insufficient reflection balance");
+            _rOwned[sender] = _rOwned[sender] - rAmount;
         }
         // Add to recipient
-        _tOwned[recipient] += amount;
+        _tOwned[recipient] = _tOwned[recipient] + amount;
         if (!_isExcludedFromReward[recipient]) {
-            _rOwned[recipient] += amount * currentRate;
+            _rOwned[recipient] = _rOwned[recipient] + (amount * currentRate);
         }
         emit Transfer(sender, recipient, amount);
     }
@@ -268,6 +271,10 @@ contract SOON is ERC20, Ownable {
         uint256 balance = token.balanceOf(address(this));
         require(amount <= balance, "SOON: Insufficient token balance to rescue");
         require(token.transfer(to, amount), "SOON: Token transfer failed");
+    }
+
+    function isExcludedFromReward(address account) external view returns (bool) {
+        return _isExcludedFromReward[account];
     }
 
     // --- Receive Ether ---
