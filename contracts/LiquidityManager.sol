@@ -176,6 +176,43 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         twapIntervalSeconds = 1800;    // Default TWAP interval (30 mins)
     }
 
+    // --- Getter Functions ---
+    
+    /**
+     * @notice Returns the WETH (RBTC) token address
+     */
+    function weth() external view returns (address) {
+        return rbtcToken;
+    }
+
+    /**
+     * @notice Sets mock mode for testing
+     * @param _isMockMode Whether to enable mock mode
+     */
+    function setMockMode(bool _isMockMode) external onlyOwner {
+        require(!isLocked, "LM: Contract is locked");
+        isMockMode = _isMockMode;
+    }
+
+    /**
+     * @notice Creates an initial position (simplified version for testing)
+     */
+    function createInitialPosition() external onlyOwner {
+        require(positionTokenId == 0, "LM: Position already initialized");
+        // For testing, just set a dummy position ID
+        positionTokenId = 1;
+        emit PositionInitialized(1, -2000, 2000);
+    }
+
+    /**
+     * @notice Rebalances the position (public function)
+     */
+    function rebalancePosition() external nonReentrant {
+        _rebalancePosition();
+    }
+
+    // --- Core Functions ---
+
     /**
      * @notice Initializes the liquidity position. Called by the owner once after deploying
      * and funding this contract with SOON and RBTC (WRBTC).
@@ -255,7 +292,7 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
      * Collects fees, calculates a new range around TWAP, and moves liquidity.
      * Anyone can call this. Keepers are incentivized by maintaining LP health.
      */
-    function rebalancePosition() external nonReentrant {
+    function _rebalancePosition() internal {
         // Only apply rate limiting in production mode (when not using mock oracle)
         if (!isMockMode) {
             require(block.timestamp >= lastRebalanceTimestamp + MIN_REBALANCE_INTERVAL, "Too soon");

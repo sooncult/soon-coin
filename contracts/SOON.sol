@@ -60,16 +60,21 @@ contract SOON is ERC20, Ownable {
         _tTotal = INITIAL_SUPPLY;
         _rTotal = (MAX_UINT256 - (MAX_UINT256 % _tTotal)); // Initialize with a value that maintains precision
 
-        _mint(msg.sender, INITIAL_SUPPLY);
-
         // Deployer is initially excluded from fees and rewards
         _excludeFromFee(msg.sender, true);
         _excludeFromReward(msg.sender, true);
+        
+        // Properly mint tokens to deployer and set up reflection balances
+        _tOwned[msg.sender] = INITIAL_SUPPLY;
+        // Since deployer is excluded from rewards, no need to set _rOwned
+        
         // Burn address is always excluded from rewards
         _excludeFromReward(burnAddress, true);
 
         // Ensure tax components sum up correctly
         require(reflectionFeeBIPS + burnFeeBIPS + liquidityFeeBIPS == taxRateBIPS, "SOON: Tax components mismatch total tax rate");
+        
+        emit Transfer(address(0), msg.sender, INITIAL_SUPPLY);
     }
 
     // --- ERC20 Overrides & Core Logic ---
