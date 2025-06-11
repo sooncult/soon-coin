@@ -3,12 +3,20 @@ const hre = require("hardhat");
 const { ethers } = require("hardhat");
 
 async function main() {
-  console.log("Deploying SOON Token contracts to Rootstock Testnet...");
+  console.log("Deploying SOON Token contracts to", network.name, "network...");
   
   // Get the deployer's address
   const [deployer] = await hre.ethers.getSigners();
   console.log("Deploying contracts with the account:", deployer.address);
   console.log("Account balance:", (await deployer.getBalance()).toString());
+
+  // Check if we're on mainnet and warn
+  if (network.name === 'mainnet' || network.name === 'rootstock') {
+    console.log("\n⚠️  WARNING: Deploying to MAINNET!");
+    console.log("Make sure you have reviewed all contracts for production readiness.");
+    console.log("Continuing in 5 seconds...\n");
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  }
 
   // Deploy SOON Token
   console.log("Deploying SOON Token...");
@@ -63,47 +71,69 @@ async function main() {
   console.log("Created SOON/WETH pool at:", poolAddress);
 
   // Deploy LiquidityManager with network awareness
-  console.log("Deploying LiquidityManager...");
-  const LiquidityManager = await hre.ethers.getContractFactory("LiquidityManager");
-  
   let liquidityManager;
   if (network.name === 'hardhat' || network.name === 'localhost') {
-      // Local testing mode: Use mock oracle (no pool address)
-      liquidityManager = await LiquidityManager.deploy(
-          soon.address,
-          weth9.address,
-          positionManager.address,
-          ethers.constants.AddressZero // Use address(0) for mock mode
-      );
+    // Local testing mode: Use MockLiquidityManager
+    console.log("Deploying MockLiquidityManager for testing...");
+    const MockLiquidityManager = await hre.ethers.getContractFactory("MockLiquidityManager");
+    liquidityManager = await MockLiquidityManager.deploy(
+      soon.address,
+      weth9.address,
+      positionManager.address
+    );
+    console.log("⚠️  Using MockLiquidityManager - DO NOT USE IN PRODUCTION");
   } else {
-      // Testnet/Mainnet mode: Use real pool as oracle
-      liquidityManager = await LiquidityManager.deploy(
-          soon.address,
-          weth9.address,
-          positionManager.address,
-          poolAddress // Real pool address for TWAP oracle
-      );
+    // Production mode: Use real LiquidityManager with real pool oracle
+    console.log("Deploying LiquidityManager for production...");
+    
+    // For mainnet, you should use the actual SushiSwap V3 contracts
+    // These addresses are placeholders - replace with actual mainnet addresses
+    if (network.name === 'mainnet' || network.name === 'rootstock') {
+      console.log("🚨 IMPORTANT: Update the following addresses with actual SushiSwap V3 addresses:");
+      console.log("   - Position Manager: Use actual SushiSwap V3 NonfungiblePositionManager");
+      console.log("   - Pool Oracle: Use actual SOON/RBTC pool address");
+      console.log("   - WETH9: Use actual WRBTC address on Rootstock");
+    }
+    
+    const LiquidityManager = await hre.ethers.getContractFactory("LiquidityManager");
+    liquidityManager = await LiquidityManager.deploy(
+      soon.address,
+      weth9.address,
+      positionManager.address,
+      poolAddress // Real pool address for TWAP oracle
+    );
   }
-
   await liquidityManager.deployed();
   console.log("LiquidityManager deployed to:", liquidityManager.address);
-  console.log("Oracle mode:", await liquidityManager.isMockMode() ? "Mock Oracle" : "Real Oracle");
 
   // Set LiquidityManager in SOON token
   console.log("Setting LiquidityManager in SOON token...");
-  await soon.transferOwnership(liquidityManager.address);
+  await soon.setLiquidityManager(liquidityManager.address);
   console.log("Transferred SOON token ownership to Liquidity Manager");
 
   console.log("Deployment completed!");
   
   // Log contract addresses for verification
-  console.log("\nContract Addresses:");
+  console.log("\n==================== Contract Addresses ====================");
+  console.log("Network:", network.name);
   console.log("SushiSwap V3 Factory:", factory.address);
   console.log("WETH9:", weth9.address);
   console.log("Nonfungible Position Manager:", positionManager.address);
   console.log("SOON Token:", soon.address);
   console.log("SOON Airdrop:", airdrop.address);
   console.log("Liquidity Manager:", liquidityManager.address);
+  console.log("SOON/WETH Pool:", poolAddress);
+  console.log("==========================================================");
+
+  if (network.name === 'mainnet' || network.name === 'rootstock') {
+    console.log("\n📋 POST-DEPLOYMENT CHECKLIST:");
+    console.log("1. Verify all contracts on block explorer");
+    console.log("2. Transfer initial SOON and RBTC to LiquidityManager");
+    console.log("3. Call initializePosition() on LiquidityManager");
+    console.log("4. Lock the LiquidityManager after configuration");
+    console.log("5. Renounce ownership if required");
+    console.log("6. Update airdrop Merkle root with actual data");
+  }
 
   // Wait for a few block confirmations
   console.log("\nWaiting for block confirmations...");

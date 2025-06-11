@@ -120,11 +120,11 @@ interface IUniswapV3PoolOracle {
  * - SOON token address
  * - RBTC token address (WRBTC)
  * - SushiSwap V3 NonfungiblePositionManager address
- * - SushiSwap V3 Pool address for TWAP oracle (optional, empty = mock mode)
+ * - SushiSwap V3 Pool address for TWAP oracle
  */
-contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
+contract LiquidityManager is Ownable, ReentrancyGuard {
     INonfungiblePositionManager public immutable positionManager;
-    IUniswapV3PoolOracle public sushiPoolOracle; // Removed immutable - will be set in constructor
+    IUniswapV3PoolOracle public immutable sushiPoolOracle;
     
     IERC20 public immutable soonToken;
     address public immutable rbtcToken; // WNATIVE address on Rootstock (WRBTC)
@@ -135,7 +135,10 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
     uint32 public twapIntervalSeconds; // e.g., 1800 for 30-minute TWAP
 
     bool public isLocked; // If true, ownership functions are disabled
-    bool public isMockMode; // If true, we're using mock oracle functions
+
+    uint256 public lastRebalanceTimestamp;
+    uint256 public constant MIN_REBALANCE_INTERVAL = 1 hours;
+    uint256 public constant MIN_LIQUIDITY = 1e15; // Minimum liquidity amount
 
     event PositionInitialized(uint256 indexed tokenId, int24 initialTickLower, int24 initialTickUpper);
     event PositionRebalanced(uint256 indexed tokenId, int24 newTickLower, int24 newTickUpper, uint128 newLiquidity);
@@ -151,27 +154,37 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         address _poolOracleAddress
     ) {
         require(_positionManagerAddress != address(0) &&
-                _soonTokenAddress != address(0) && _rbtcTokenAddress != address(0), "LM: Zero address provided");
+                _soonTokenAddress != address(0) && 
+                _rbtcTokenAddress != address(0) &&
+                _poolOracleAddress != address(0), "LM: Zero address provided");
         
         soonToken = IERC20(_soonTokenAddress);
         rbtcToken = _rbtcTokenAddress; // This should be WRBTC
         positionManager = INonfungiblePositionManager(_positionManagerAddress);
-        
-        // Set up oracle mode based on parameters
-        if (_poolOracleAddress != address(0)) {
-            // Production mode: Use the provided pool address as oracle
-            sushiPoolOracle = IUniswapV3PoolOracle(_poolOracleAddress);
-            isMockMode = false;
-        } else {
-            // Testing mode: Use self-referential mock oracle
-            sushiPoolOracle = IUniswapV3PoolOracle(address(this));
-            isMockMode = true;
-        }
+        sushiPoolOracle = IUniswapV3PoolOracle(_poolOracleAddress);
         
         // Default values for tick distance and TWAP interval
         tickDistance = 2000;           // Default tick distance
         twapIntervalSeconds = 1800;    // Default TWAP interval (30 mins)
     }
+
+    // --- Getter Functions ---
+    
+    /**
+     * @notice Returns the WETH (RBTC) token address
+     */
+    function weth() external view returns (address) {
+        return rbtcToken;
+    }
+
+    /**
+     * @notice Rebalances the position (public function)
+     */
+    function rebalancePosition() external virtual nonReentrant {
+        _rebalancePosition();
+    }
+
+    // --- Core Functions ---
 
     /**
      * @notice Initializes the liquidity position. Called by the owner once after deploying
@@ -191,6 +204,8 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         require(positionTokenId == 0, "LM: Position already initialized");
         require(!isLocked, "LM: Contract is locked");
         require(amountSOONDesired > 0 && amountRBTCDdesired > 0, "LM: Amounts must be positive");
+        require(amountSOONDesired >= MIN_LIQUIDITY, "LM: Below minimum liquidity");
+        require(address(sushiPoolOracle) != address(0), "LM: Production requires real oracle");
 
         // Ensure this contract has the tokens
         require(soonToken.balanceOf(address(this)) >= amountSOONDesired, "LM: Insufficient SOON balance");
@@ -201,6 +216,14 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         // Approve tokens to the Position Manager
         soonToken.approve(address(positionManager), amountSOONDesired);
         IERC20(rbtcToken).approve(address(positionManager), amountRBTCDdesired);
+
+        // --- Compute slippage protected mins respecting token ordering ---
+        uint256 amount0MinCalc = address(soonToken) < rbtcToken
+            ? (amountSOONDesired * 95 / 100)
+            : (amountRBTCDdesired * 95 / 100);
+        uint256 amount1MinCalc = address(soonToken) < rbtcToken
+            ? (amountRBTCDdesired * 95 / 100)
+            : (amountSOONDesired * 95 / 100);
 
         int24 tickLower = targetTick - tickDistance;
         int24 tickUpper = targetTick + tickDistance;
@@ -220,8 +243,8 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
             tickUpper: address(soonToken) < rbtcToken ? tickUpper : -tickLower,
             amount0Desired: address(soonToken) < rbtcToken ? amountSOONDesired : amountRBTCDdesired,
             amount1Desired: address(soonToken) < rbtcToken ? amountRBTCDdesired : amountSOONDesired,
-            amount0Min: 0, // WARNING: Setting to 0 accepts any price. Consider calculating a safe minimum.
-            amount1Min: 0, // WARNING: Setting to 0 accepts any price.
+            amount0Min: amount0MinCalc,
+            amount1Min: amount1MinCalc,
             recipient: address(this), // LP NFT minted to this contract
             deadline: block.timestamp + 600 // 10 minutes deadline
         });
@@ -244,7 +267,8 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
      * Collects fees, calculates a new range around TWAP, and moves liquidity.
      * Anyone can call this. Keepers are incentivized by maintaining LP health.
      */
-    function rebalancePosition() external nonReentrant {
+    function _rebalancePosition() internal {
+        require(block.timestamp >= lastRebalanceTimestamp + MIN_REBALANCE_INTERVAL, "LM: Too soon to rebalance");
         require(positionTokenId != 0, "LM: Position not initialized");
         // No isLocked check here, rebalancing should always be possible.
 
@@ -267,12 +291,14 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         int24 newTickLower = currentTwapTick - tickDistance;
         int24 newTickUpper = currentTwapTick + tickDistance;
 
-        // 4. If range has moved significantly, rebalance
+        // 4. If range has moved significantly, rebalance using increaseLiquidity
         // This is a simple check. More sophisticated logic could be added.
         if (newTickLower > oldTickUpper || newTickUpper < oldTickLower) {
             // Range has moved outside current position, rebalance
             _rebalanceToNewRange(currentLiquidity, newTickLower, newTickUpper);
         }
+
+        lastRebalanceTimestamp = block.timestamp;
     }
 
     /**
@@ -304,7 +330,7 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
      * @notice Internal function to get the current TWAP tick.
      * @return The current TWAP tick, or type(int24).max if unavailable.
      */
-    function _getTwapTick() internal view returns (int24) {
+    function _getTwapTick() internal view virtual returns (int24) {
         uint32[] memory secondsAgos = new uint32[](2);
         secondsAgos[0] = twapIntervalSeconds;
         secondsAgos[1] = 0;
@@ -335,9 +361,9 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         INonfungiblePositionManager.DecreaseLiquidityParams memory decreaseParams = INonfungiblePositionManager.DecreaseLiquidityParams({
             tokenId: positionTokenId,
             liquidity: currentLiquidity,
-            amount0Min: 0, // WARNING: Setting to 0 accepts any price
-            amount1Min: 0, // WARNING: Setting to 0 accepts any price
-            deadline: block.timestamp + 600 // 10 minutes deadline
+            amount0Min: 0, // accept whatever comes out (optional: add slippage guard)
+            amount1Min: 0,
+            deadline: block.timestamp + 600
         });
 
         (uint256 amount0, uint256 amount1) = positionManager.decreaseLiquidity(decreaseParams);
@@ -354,19 +380,46 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
         amount0 += collected0;
         amount1 += collected1;
 
-        // 3. Add liquidity to new range
-        INonfungiblePositionManager.IncreaseLiquidityParams memory increaseParams = INonfungiblePositionManager.IncreaseLiquidityParams({
-            tokenId: positionTokenId,
-            amount0Desired: amount0,
-            amount1Desired: amount1,
-            amount0Min: 0, // WARNING: Setting to 0 accepts any price
-            amount1Min: 0, // WARNING: Setting to 0 accepts any price
-            deadline: block.timestamp + 600 // 10 minutes deadline
+        // ------------------------------------------------------------------
+        // Increase liquidity on the existing position with new parameters
+        // Note: In UniswapV3, you cannot change the tick range of an existing position.
+        // If the tick range needs to change, you must mint a new position.
+        // For simplicity, we'll keep the current approach of minting a new position.
+        // ------------------------------------------------------------------
+
+        // Approve tokens again for the new mint
+        if (address(soonToken) < rbtcToken) {
+            soonToken.approve(address(positionManager), amount0);
+            IERC20(rbtcToken).approve(address(positionManager), amount1);
+        } else {
+            soonToken.approve(address(positionManager), amount1);
+            IERC20(rbtcToken).approve(address(positionManager), amount0);
+        }
+
+        // Compute slippage-protected mins for mint
+        uint256 min0 = address(soonToken) < rbtcToken ? (amount0 * 95 / 100) : (amount1 * 95 / 100);
+        uint256 min1 = address(soonToken) < rbtcToken ? (amount1 * 95 / 100) : (amount0 * 95 / 100);
+
+        INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
+            token0: address(soonToken) < rbtcToken ? address(soonToken) : rbtcToken,
+            token1: address(soonToken) < rbtcToken ? rbtcToken : address(soonToken),
+            fee: POOL_FEE,
+            tickLower: address(soonToken) < rbtcToken ? newTickLower : -newTickUpper,
+            tickUpper: address(soonToken) < rbtcToken ? newTickUpper : -newTickLower,
+            amount0Desired: address(soonToken) < rbtcToken ? amount0 : amount1,
+            amount1Desired: address(soonToken) < rbtcToken ? amount1 : amount0,
+            amount0Min: min0,
+            amount1Min: min1,
+            recipient: address(this),
+            deadline: block.timestamp + 600
         });
 
-        (uint128 newLiquidity, , ) = positionManager.increaseLiquidity(increaseParams);
+        (uint256 newTokenId, uint128 newLiquidity, , ) = positionManager.mint(params);
 
-        emit PositionRebalanced(positionTokenId, newTickLower, newTickUpper, newLiquidity);
+        // Update stored tokenId to the fresh position
+        positionTokenId = newTokenId;
+
+        emit PositionRebalanced(newTokenId, newTickLower, newTickUpper, newLiquidity);
     }
 
     // --- Owner Functions ---
@@ -430,57 +483,6 @@ contract LiquidityManager is Ownable, ReentrancyGuard, IUniswapV3PoolOracle {
     // Make contract payable to receive RBTC for liquidity provision if needed directly
     // or for rescue.
     receive() external payable {}
-
-    /**
-     * @notice Mock implementation of observe for the IUniswapV3PoolOracle interface
-     * @dev This is only used in local testing and will revert in production mode
-     */
-    function observe(uint32[] calldata secondsAgos) 
-        external 
-        view 
-        returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityCumulativeX128s) 
-    {
-        require(isMockMode, "LM: Not in mock mode");
-        
-        // Mock implementation that returns some dummy data
-        tickCumulatives = new int56[](secondsAgos.length);
-        secondsPerLiquidityCumulativeX128s = new uint160[](secondsAgos.length);
-        
-        // Just return 0 values for testing
-        for (uint i = 0; i < secondsAgos.length; i++) {
-            tickCumulatives[i] = 0;
-            secondsPerLiquidityCumulativeX128s[i] = 0;
-        }
-        
-        return (tickCumulatives, secondsPerLiquidityCumulativeX128s);
-    }
-    
-    /**
-     * @notice Mock implementation of slot0 for the IUniswapV3PoolOracle interface
-     * @dev This is only used in local testing and will revert in production mode
-     */
-    function slot0() external view returns (
-        uint160 sqrtPriceX96,
-        int24 tick,
-        uint16 observationIndex,
-        uint16 observationCardinality,
-        uint16 observationCardinalityNext,
-        uint8 feeProtocol,
-        bool unlocked
-    ) {
-        require(isMockMode, "LM: Not in mock mode");
-        
-        // Mock implementation that returns some dummy data
-        return (
-            uint160(1 << 96), // 1.0 as a Q96 number
-            0,                // Current tick at 0
-            0,                // Observation index
-            1,                // Observation cardinality 
-            1,                // Observation cardinality next
-            0,                // Fee protocol
-            true              // Unlocked
-        );
-    }
 }
 
 // Minimal ERC721 interface for NFT transfer

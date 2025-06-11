@@ -1,6 +1,16 @@
 require("@nomicfoundation/hardhat-toolbox");
-require('dotenv').config();
-const { PRIVATE_KEY, ROOTSTOCK_TESTNET_RPC_URL, ETHERSCAN_API_KEY } = process.env;
+require("dotenv").config();
+
+// Load mainnet config
+const mainnetConfig = require("./config/mainnet");
+
+const { 
+  PRIVATE_KEY, 
+  PRIVATE_KEY_MAINNET, 
+  ROOTSTOCK_TESTNET_RPC_URL, 
+  ROOTSTOCK_MAINNET_RPC_URL, 
+  ETHERSCAN_API_KEY 
+} = process.env;
 
 /**
  * @type import('hardhat/config').HardhatUserConfig
@@ -31,6 +41,19 @@ module.exports = {
           apiKey: ETHERSCAN_API_KEY
         }
       }
+    },
+    rootstock: {
+      url: ROOTSTOCK_MAINNET_RPC_URL || mainnetConfig.RPC_URL,
+      chainId: mainnetConfig.CHAIN_ID,
+      accounts: PRIVATE_KEY_MAINNET ? [`0x${PRIVATE_KEY_MAINNET}`] : [],
+      gasPrice: mainnetConfig.GAS_SETTINGS.gasPrice,
+      gasMultiplier: mainnetConfig.GAS_SETTINGS.gasMultiplier,
+      timeout: mainnetConfig.GAS_SETTINGS.timeout,
+      verify: {
+        etherscan: {
+          apiKey: ETHERSCAN_API_KEY
+        }
+      }
     }
   },
   etherscan: {
@@ -42,6 +65,14 @@ module.exports = {
         urls: {
           apiURL: "https://explorer.testnet.rsk.co/api",
           browserURL: "https://explorer.testnet.rsk.co"
+        }
+      },
+      {
+        network: "rootstock",
+        chainId: 30,
+        urls: {
+          apiURL: "https://explorer.rsk.co/api",
+          browserURL: "https://explorer.rsk.co"
         }
       }
     ]
