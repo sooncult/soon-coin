@@ -16,6 +16,7 @@ typechain-types/
 .env.test.local
 .env.production.local
 .secrets.json
+.env.mainnet
 
 # Compiler files
 out/
